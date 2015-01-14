@@ -1,3 +1,3 @@
-# Hello-World
+# Device Class Creator
 Beschreibung
-folgt ... nicht. Hier wierd Gig gelernt ... ;-)
+folgt ... . Hier wird noch Git gelernt ... ;-)
