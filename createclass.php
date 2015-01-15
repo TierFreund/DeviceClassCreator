@@ -1,34 +1,8 @@
-<script>
-/*
-	
-
-var	s={
-	init:function(){for (var obj in this){if(typeof this[obj].parent!='undefined')this[obj].parent=this;}},
-	aa: function(aa){
-		alert('aa='+aa);
-	},
-	bb: function(bb){
-		alert('bb='+bb);
-		this.aa('from B');
-	},
-	c: {parent:null, 
-		a: function(ca){
-			alert('ca='+ca);
-			this.parent.aa('aus CA');
-		}
-	}
-};
-
-s.init();
-s.c.a('C.A');
-
-
-*/
-</script>
 <?
 
 /* TODO: Prüfen ob es bei doppelten claasnamen die gleiche  SCPDURL ist */
-include 'XUTILS.php';
+//include 'XUTILS.php'; only for dumpvar 
+
 define('MSG_NEEDS',    'Benoetigt');
 define('MSG_RETURNS',  'Liefert als Ergebnis');
 define('MSG_FUNCTION', 'Funktion');
@@ -387,31 +361,20 @@ DATA;
 		$output[2]['data']=<<<DATA
 $space$sp3 public function RegisterEventCallback(\$callback_url,\$timeout=300){
 $space$sp7 if(!\$this->EVENTURL)return false;	
-$space$sp7 \$content='SUBSCRIBE '.\$this->EVENTURL.' HTTP/1.1
-HOST: '.\$this->BASE->GetBaseUrl().'
-CALLBACK: <'.\$callback_url.'>
-NT: upnp:event
-TIMEOUT: Second-'.\$timeout.'
-Content-Length: 0
-
-';
+$space$sp7 \$content="SUBSCRIBE {\$this->EVENTURL} HTTP/1.1\nHOST: ".\$this->BASE->GetBaseUrl()."\nCALLBACK: <\$callback_url>\nNT: upnp:event\nTIMEOUT: Second-\$timeout\nContent-Length: 0\n\n";
 $space$sp7 \$a=\$this->BASE->sendPacket(\$content);\$res=false;
 $space$sp7 if(\$a)foreach(\$a as \$r){\$m=explode(':',\$r);if(isSet(\$m[1])){\$b=array_shift(\$m);\$res[\$b]=implode(':',\$m);}}
 $space$sp7 return \$res;
 $space$sp3 }
 DATA;
-		$this->VarDefs[$ClassName]['UnRegisterEventCallback']=null;
-		$in=array('?');
-		$out=array('?');
+		$this->VarDefs[$ClassName]['UnRegisterEventCallback']['SID']=array('mode'=>'in','default'=>null,'allowed'=>null,'typ'=>'string');;
+		$in=array('@SID (string)');
+		$out=array();
 		$output[3]['head']=$this->CreateFunctionHead('UnRegisterEventCallback',$in,$out,$offsetX+4);
 		$output[3]['data']=<<<DATA
-$space$sp3 public function UnRegisterEventCallback(){ 
+$space$sp3 public function UnRegisterEventCallback(\$SID){ 
 $space$sp7 if(!\$this->EVENTURL)return false;	
-$space$sp7 \$content='UNSUBSCRIBE '.\$this->EVENTURL.' HTTP/1.1
-HOST: '.\$this->BASE->GetBaseUrl().'
-Content-Length: 0
-
-';
+$space$sp7 \$content="UNSUBSCRIBE {\$this->EVENTURL} HTTP/1.1\nHOST: ".\$this->BASE->GetBaseUrl()."\nSID: \$SID\nContent-Length: 0\n\n";
 $space$sp7 return \$this->BASE->sendPacket(\$content);
 $space$sp3 }
 DATA;
