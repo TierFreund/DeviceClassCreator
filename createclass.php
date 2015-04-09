@@ -1,7 +1,7 @@
 <?
 
 /* TODO: Prüfen ob es bei doppelten claasnamen die gleiche  SCPDURL ist */
-//include 'XUTILS.php'; only for dumpvar 
+//include 'XUTILS.php'; for dumpcode 
 
 define('MSG_NEEDS',    'Benoetigt');
 define('MSG_RETURNS',  'Liefert als Ergebnis');
@@ -14,49 +14,72 @@ define('MSG_NO_FUNCTION','Unbekannter Funktions-Name');
 define('MSG_ARRAY_KEYS', 'Array mit folgenden Keys');
 define('HEAD_LINE_FUNC','**************************************************************************');	
 define('HEAD_LINE_CLASS','##########################################################################');	
+if(!isset($included))$included=false;
+$host=@$_REQUEST['host'];
+$name=@$_REQUEST['name'];
+$save=@$_REQUEST['save'];
+
+if($host){
+	Create($host,$name,$save);
+}else {
+	if(!$included)Echo "aufruf mit createclass.php?host=<komplette url zum datenabruf>?name=<name der Objektklasse>&save<wenn gesetzt werden units erstellt><br>";
+}	
+function Create($name,$host,$save=false,$showOutput=true, $ShowHead=true){
+	$o=new SchemeCreator($name,null,$ShowHead);
+	$s=$o->Create($host);
+	if($showOutput)echo "Ausgabe:<br><plain>".nl2br(str_replace(' ','&nbsp;',htmlspecialchars($s))).'</plain>';
+	if($save)$o->Save();
+	flush();
+}
 
 class SchemeCreator {
 	private $BaseUrl='';
+	private $IP='';
+	private $PORT=0;
 	private $ClassSuffix='';
 	private $FullServiceNames=false;
 	private $Compact=false; // Wenn true werden keine Kommentare / Heads erstellt;
 	private $VarDefaults=[]; // Vorgabe Werte für Functionen
 	private $MaxArguments=5; // Zum erstellen der Function CallService benötigt
 	private $VarDefs=null; // Array zum speichern aller Variablen der Service Funktionen;
+	private $ShowHead=true; // Wenn true wird ein Kopf Header in Ausgabedatei erzeugt;
 	public $Content='';
 	
-	public function __construct($ClassSuffix='', $Defaults=null){
+	public function __construct($ClassSuffix='', $Defaults=null, $showHead=true){
 		if(!is_null($ClassSuffix))$this->ClassSuffix=$ClassSuffix;
+		$this->ShowHead=$showHead;
+		
 		if(is_array($Defaults))$this->VarDefaults=$Defaults;
 		else{
 			$this->VarDefaults['InstanceID']=0;
-			$this->VarDefaults['Channel']="'MASTER'";
+			$this->VarDefaults['Channel']="'Master'";
 			$this->VarDefaults['Speed']=1;
 		}
 	}
 	
 	public function Create($url, $FullServiceNames=false, $save=false, $ClassSuffix=null){
+	
 		$this->MaxArguments=5;
 		$this->VarDefs=[];
 		$this->FullServiceNames=$FullServiceNames;
 		$this->Content='';
+		$this->FunctionVars=[];
 		if(!is_null($ClassSuffix))$this->ClassSuffix=$ClassSuffix;
 		$xml = simplexml_load_file($url);
 		if(!$xml)die ("Kann $url nicht erreichen");
 		$p=parse_url($url);
 		$this->BaseUrl=($p['scheme'])?$p['scheme'].'://':'';
 		$this->BaseUrl.=$p['host'].':'.$p['port'];
+		$this->IP=$p['host']; $this->PORT=$p['port'];
 		if(!$this->ClassSuffix){
 			preg_match('/^([A-Za-z]+)/',(string)$xml->device->manufacturer,$matches); 
 			$name=$matches[1];
 			$this->ClassSuffix=$name;
 		}
-		$device_classes=[];
-		$service_classes=[];
-		$dupe_classes=[];
+		$device_classes=$service_classes=$dupe_classes=[];
 		$tmp=[];
 		$bd=&$xml->device;
-		
+		$services=[];
 		// Erstelle ClassenIndex zwecks überprüfung und handling von gleichen Namen
 		if($bd->serviceList){
 			foreach($bd->serviceList[0]->service as $service){
@@ -66,11 +89,21 @@ class SchemeCreator {
 		}
 		if($bd->deviceList){
 			foreach($bd->deviceList[0]->device as $device){
-				foreach($device->serviceList->service as $service){
+				foreach($device->serviceList[0]->service as $service){
 					$name=$this->GetServiceName($service);
 					if(isSet($tmp[$name]))$dupe_classes[$name]=1;else $tmp[$name]=1;
 				}
+				if($device->deviceList){
+					foreach($device->deviceList[0]->device as $subdevice){
+						foreach($subdevice->serviceList[0]->service as $subservice){
+							$name=$this->GetServiceName($subservice);
+							if(isSet($tmp[$name]))$dupe_classes[$name]=1;else $tmp[$name]=1;
+						}
+					}		
+				}
+
 			}
+			
 		}	
 		$tmp=null;			
 		// Erstelle Service Classen;
@@ -103,10 +136,27 @@ class SchemeCreator {
 						$services[$name]=$this->CreateUpnpServiceClass($service);
 					}	
 				}
+				if($device->deviceList){
+					foreach($device->deviceList[0]->device as $subdevice){
+						foreach($subdevice->serviceList[0]->service as $subservice){
+							$name=$this->GetServiceName($subservice);
+							if(isSet($dupe_classes[$name])){
+								$clName=$this->GetServiceName($subservice,true);
+								$device_classes[]=$clName.'=new '.$this->ClassSuffix.$name."($"."this,'{$subservice->serviceType}','{$subservice->controlURL}','{$subservice->eventSubURL}');";
+							}else {	
+								$device_classes[]=$name.'=new '.$this->ClassSuffix.$name.'($this);';
+							}
+							if(!isSet($services[$name])){
+								$services[$name]=$this->CreateUpnpServiceClass($subservice);
+							}	
+					
+						}
+					}						
+				}
 			}
 		}
 		$data=implode("\n",$services);
-		$head=$this->CreateDeviceHead($url,$bd);
+		$head=$this->CreateDeviceHead($url,$bd,$this->ShowHead);
 		$base=$this->CreateBaseUpnpClass().PHP_EOL;
 		$master=$this->CreateMasterControlClass($service_classes,$device_classes, $bd).PHP_EOL;
 		$this->Content=$head.$master.$base.$data;
@@ -117,6 +167,15 @@ class SchemeCreator {
 		return $this->Content;
 		
 	}
+	public function Save($fileName=''){
+		if(!$fileName)$fileName=strtolower( "{$this->ClassSuffix}.class.php");
+		file_put_contents($fileName,"<?\n".$this->Content."\n?>");
+		file_put_contents($fileName.'.def',"<?\n".$this->CreateFunctionReferenz()."\n?>");
+		if(function_exists('dumpcode'))
+			file_put_contents(strtolower($this->ClassSuffix.'.functionvars.php'),"<?\n".dumpcode($this->VarDefs,"{$this->ClassSuffix}_FunctionsVars",true)."\n?>");
+		Echo "Saved as : $fileName<br>";
+	}
+
 	public function CreateFunctionReferenz(){
 		$flist='';$typelist=[];
 		$fl=str_repeat('-',50);
@@ -150,91 +209,6 @@ class SchemeCreator {
 		return $typelist.$flist;
 	}
 	
-	public function CreateJSFunctionReferenz(){
-		$flist="{\n";$sp1=str_repeat(' ',2);$sp2=str_repeat(' ',4);$sp3=str_repeat(' ',6);
-		$flist.=$sp1.'init:function(){for (var o in this){if(typeof this[o]._B!=\'undefined\')this[o]._B=this;}},'.PHP_EOL;
-		$flist.=$sp1."CallService:function (service,function,args){ alert('callService'+service+'.'+function);},\n";
-		foreach($this->VarDefs as $ServiceName=>$service){
-			if($ServiceName==$this->ClassSuffix.'UpnpDevice'||$ServiceName==$this->ClassSuffix.'UpnpClass')continue;
-			$flist.="$sp1$ServiceName: { _B:null";
-			if(!$service){
-				$flist.="},\n";
-				continue;
-			}
-			$flist.=",\n";
-			
-			foreach($service as $FunctionName=>$function){
-				$func="$FunctionName:function (";	
-				if(!$function){
-					$flist.="$sp2$func){},\n";
-					continue;
-				}
-
-				$f="return this._B.CallService('$ServiceName','$FunctionName'";
-				$finner='';
-				$va=[];
-				foreach($function as $VarName=>$var){
-					if($var['mode']=='in'){
-						$va[]=$VarName;
-						if (!is_null($var['default'])){
-//echo "VAR $VarName  DEFAULT: {$var['default']}<br>";
-							$finner="if (typeof $VarName=='undefined')$VarName='{$var['default']}';";
-						}
-					}
-		
-				}
-				if(count($va)>0)$f.=',['.implode(',',$va)."]";
-				
-				$f.=");";
-				$f=$finner.$f;
-					
-				
-				$func.=implode(',',$va)."){ $f },\n";
-		
-				$flist.=$sp2.$func;
-			}
-				
-			$flist.="$sp1},\n";
-		}
-		$flist.='}';
-		
-		return $flist;
-	}
-	public function CreateJSFunctionReferenz1(){
-		$flist="{\n";$sp1=str_repeat(' ',2);$sp2=str_repeat(' ',4);$sp3=str_repeat(' ',6);
-		foreach($this->VarDefs as $ServiceName=>$service){
-			$flist.="$sp1$ServiceName: {";
-			if(!$service){
-				$flist.="},\n";
-				continue;
-			}
-			$flist.="\n";
-			foreach($service as $FunctionName=>$function){
-				$flist.="$sp2$FunctionName: {";
-				if(!$function){
-					$flist.="},\n";
-					continue;
-				}
-				$flist.="\n";$va=[];
-				foreach($function as $VarName=>$var){
-					$v="$VarName : { typ: '{$var['typ']}'";
-					$v.=", mode:'{$var['mode']}'";
-
-					$v.=", default: ".((!is_null($var['default'])&&$var['default']!='')?"'{$var['default']}'":'null');
-					$v.=', allowed: '.(($var['allowed'])?"''":'null');	
-					$v.="}";
-					$va[]=$v;
-				}
-				$flist.=$sp3.implode(",\n$sp3",$va).PHP_EOL."$sp2},\n";
-			}
-				
-			$flist.="$sp1},\n";
-		}
-		$flist.='},';
-		
-		return $flist;
-	}
-	
 	private function GetServiceName($service, $full=false){
 		preg_match('/service:(.+)\:/',(string)$service->serviceType,$matches); 
 		$name=$matches[1];
@@ -249,39 +223,34 @@ class SchemeCreator {
 		return $name;
 	}
 	
-	private function CreateDeviceHead($url,$device){
+	private function CreateDeviceHead($url,$device,$showDeviceInfo=true){
 		$dt=date(DATE_W3C);
 		if($device->serialNumber)
 			$serial=$device->serialNumber;
 		else if($device->serialNum)
 			$serial=$device->serialNum;
 		else $serial='';
-		return <<<DATA
-/*---------------------------------------------------------------------------/
-	
-File:  
-	Desc     : PHP Classes to Control {$device->modelDescription} 
-	Date     : {$dt}
-	Version  : 1.00.45
-	Publisher: (c)2015 Xaver Bauer 
-	Contact  : x.bauer@tier-freunde.net
-
-Device:
-	Device Type  : {$device->deviceType}
-	URL 		 : {$url}	
-	Friendly Name: {$device->friendlyName}
-	Manufacturer : {$device->manufacturer}
-	URL 		 : {$device->manufacturerURL}
-	Model        : {$device->modelDescription}
-	Name 		 : {$device->modelName}
-	Number 		 : {$device->modelNumber}
-	URL 		 : {$device->modelURL}
-	Serialnumber : {$serial}
-	UDN          : {$device->UDN}
-
-/*--------------------------------------------------------------------------*/
-
-DATA;
+		$head="//---------------------------------------------------------------------------/\n//	
+//  
+//	Desc     : PHP Classes to Control {$device->modelDescription} 
+//	Date     : {$dt}
+//	Version  : 1.00.45
+//	Publisher: (c)2015 Xaver Bauer 
+//	Contact  : x.bauer@tier-freunde.net\n//\n";
+if($showDeviceInfo)$head.="// Device-Info:
+//	Device Type  : {$device->deviceType}
+//	URL 		 : {$url}	
+//	Friendly Name: {$device->friendlyName}
+//	Manufacturer : {$device->manufacturer}
+//	URL 		 : {$device->manufacturerURL}
+//	Model        : {$device->modelDescription}
+//	Name 		 : {$device->modelName}
+//	Number 		 : {$device->modelNumber}
+//	URL 		 : {$device->modelURL}
+//	Serialnumber : {$serial}
+//	UDN          : {$device->UDN}\n//\n";
+		$head.="//--------------------------------------------------------------------------/\n\n";
+		return $head;
 	}
 	private function CreateServiceHead($className, $service){
 		if($this->Compact)return '';
@@ -321,10 +290,10 @@ DATA;
 $space/*  Class  : $ClassName 
 $space/*  Desc   : Basis Class for Services
 $space/*	Vars   :
-$space/*  private SERVICE     : (string) Service URN
-$space/*  private SERVICEURL  : (string) Path to Service Control
-$space/*  private EVENTURL    : (string) Path to Event Control
-$space/*  public  BASE        : (Object) Points to MasterClass
+$space/*  protected SERVICE     : (string) Service URN
+$space/*  protected SERVICEURL  : (string) Path to Service Control
+$space/*  protected EVENTURL    : (string) Path to Event Control
+$space/*  protected BASE        : (Object) Points to MasterClass
 DATA;
 		$head.="\n$space/*".HEAD_LINE_CLASS."*/\n";
 		$data=<<<DATA
@@ -332,7 +301,7 @@ DATA;
 $space$sp3 protected \$SERVICE="";
 $space$sp3 protected \$SERVICEURL="";
 $space$sp3 protected \$EVENTURL="";
-$space$sp3 var \$BASE=null;
+$space$sp3 protected \$BASE=null;
 
 DATA;
 		$this->VarDefs[$ClassName]['__construct']['BASE']=array('mode'=>'in','default'=>null,'allowed'=>null,'typ'=>'object');
@@ -361,7 +330,7 @@ DATA;
 		$output[2]['data']=<<<DATA
 $space$sp3 public function RegisterEventCallback(\$callback_url,\$timeout=300){
 $space$sp7 if(!\$this->EVENTURL)return false;	
-$space$sp7 \$content="SUBSCRIBE {\$this->EVENTURL} HTTP/1.1\nHOST: ".\$this->BASE->GetBaseUrl()."\nCALLBACK: <\$callback_url>\nNT: upnp:event\nTIMEOUT: Second-\$timeout\nContent-Length: 0\n\n";
+$space$sp7 \$content="SUBSCRIBE {\$this->EVENTURL} HTTP/1.1\\nHOST: ".\$this->BASE->GetBaseUrl()."\\nCALLBACK: <\$callback_url>\\nNT: upnp:event\\nTIMEOUT: Second-\$timeout\\nContent-Length: 0\\n\\n";
 $space$sp7 \$a=\$this->BASE->sendPacket(\$content);\$res=false;
 $space$sp7 if(\$a)foreach(\$a as \$r){\$m=explode(':',\$r);if(isSet(\$m[1])){\$b=array_shift(\$m);\$res[\$b]=implode(':',\$m);}}
 $space$sp7 return \$res;
@@ -374,7 +343,7 @@ DATA;
 		$output[3]['data']=<<<DATA
 $space$sp3 public function UnRegisterEventCallback(\$SID){ 
 $space$sp7 if(!\$this->EVENTURL)return false;	
-$space$sp7 \$content="UNSUBSCRIBE {\$this->EVENTURL} HTTP/1.1\nHOST: ".\$this->BASE->GetBaseUrl()."\nSID: \$SID\nContent-Length: 0\n\n";
+$space$sp7 \$content="UNSUBSCRIBE {\$this->EVENTURL} HTTP/1.1\\nHOST: ".\$this->BASE->GetBaseUrl()."\\nSID: \$SID\\nContent-Length: 0\\n\\n";
 $space$sp7 return \$this->BASE->sendPacket(\$content);
 $space$sp3 }
 DATA;
@@ -391,33 +360,33 @@ DATA;
 		$msgServiceErr=MSG_NO_SERVICE;
 		$msgFuncErr=MSG_NO_FUNCTION;
 		$head=$space.'/*'.HEAD_LINE_CLASS."/\n";
-		$ClassName="{$this->ClassSuffix}UpnpDevice";
+		$ClassName="{$this->ClassSuffix}XmlRpcDevice";
 		$head.=<<<DATA
 $space/*  Class  : $ClassName 
 $space/*  Desc   : Master Class to Controll Device 
 $space/*	Vars   :
-$space/*  private _SERVICES  : (object) Holder for all Service Classes
-$space/*  private _DEVICES   : (object) Holder for all Service Classes
-$space/*  private _IP        : (string) IP Adress from Device
-$space/*  private _PORT      : (int)    Port from Device
+$space/*  protected _SERVICES  : (object) Holder for all Service Classes
+$space/*  protected _DEVICES   : (object) Holder for all Service Classes
+$space/*  protected _IP        : (string) IP Adress from Device
+$space/*  protected _PORT      : (int)    Port from Device
 DATA;
 		$head.="\n$space/*".HEAD_LINE_CLASS."*/\n";
 		$data=<<<DATA
-{$space}class {$this->ClassSuffix}UpnpDevice {
-$space$sp3 private \$_SERVICES=null;
-$space$sp3 private \$_DEVICES=null;
-$space$sp3 private \$_IP='';
-$space$sp3 private \$_PORT=1400;
+{$space}class {$ClassName} {
+$space$sp3 protected \$_SERVICES=null;
+$space$sp3 protected \$_DEVICES=null;
+$space$sp3 protected \$_IP='';
+$space$sp3 protected \$_PORT={$this->PORT};
 DATA;
 		$this->VarDefs[$ClassName]['__construct']['url']=array('mode'=>'in','default'=>'','allowed'=>null,'typ'=>'string');
-		$in=array('@url (string)  Device Url eg. \'192.168.1.1:1400\'');
+		$in=array("@url (string)  Device Url eg. '{$this->IP}:{$this->PORT}'");
 		$out=array();
 		$data.="\n$space".$this->CreateFunctionHead('__construct',$in,$out,$offsetX+4);
 		$data.=<<<DATA
 $space$sp3 public function __construct(\$url){
 $space$sp7 \$p=parse_url(\$url);
 $space$sp7 \$this->_IP=(isSet(\$p['host']))?\$p['host']:\$url;
-$space$sp7 \$this->_PORT=(isSet(\$p['port']))?\$p['port']:1400;
+$space$sp7 \$this->_PORT=(isSet(\$p['port']))?\$p['port']:{$this->PORT};
 $space$sp7 \$this->_SERVICES=new stdClass();
 $space$sp7 \$this->_DEVICES=new stdClass();
 
@@ -438,7 +407,7 @@ DATA;
 		$out=array('@result (string|array) => The XML Soap Result');
 		$output[0]['head']=$this->CreateFunctionHead('Upnp',$in,$out,$offsetX+4);
 		$output[0]['data']=<<<DATA
-$space$sp3 public function Upnp(\$url,\$SOAP_service,\$SOAP_action,\$SOAP_arguments = '',\$XML_filter = ''){
+$space$sp3 public function Upnp(\$url,\$SOAP_service,\$SOAP_action,\$SOAP_arguments = '',\$XML_filter = '', \$ReturnValue=true){
 $space$sp7 \$POST_xml = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">';
 $space$sp7 \$POST_xml .= '<s:Body>';
 $space$sp7 \$POST_xml .= '<u:'.\$SOAP_action.' xmlns:u="'.\$SOAP_service.'">';
@@ -462,7 +431,7 @@ $space$sp7 curl_close(\$ch);
 $space$sp7 if (\$XML_filter != '')
 $space$sp11 return \$this->Filter(\$r,\$XML_filter);
 $space$sp7 else
-$space$sp11 return \$r;
+$space$sp11 return \$r===false?null:\$ReturnValue;
 $space$sp3 }
 DATA;
 		$this->VarDefs[$ClassName]['Filter']['subject']=array('mode'=>'in','default'=>'','allowed'=>null,'typ'=>'string');
@@ -550,16 +519,16 @@ DATA;
 		$output[5]['head']=$this->CreateFunctionHead('__call',$in,$out,$offsetX+4);
 		$output[5]['data']=<<<DATA
 $space$sp3 public function __call(\$FunctionName, \$arguments){
-$space$sp7 if(!\$p=\$this->_ServiceObjectByFunctionName(\$FunctionName))
+$space$sp7 if(!\$p=\$this->FunctionExist(\$FunctionName))
 $space$sp11 throw new Exception('Unbekannte Funktion '.\$FunctionName.' !!!');
 $space$sp7 return \$this->CallService(\$p,\$FunctionName, \$arguments);
 $space$sp3 }
 DATA;
 		$in=array('@FunctionName (string)');
-		$out=array('@result (function||null) ServiceObject mit der gusuchten Function');
-		$output[6]['head']=$this->CreateFunctionHead('_ServiceObjectByFunctionName',$in,$out,$offsetX+4);
+		$out=array('@result (object||false) ServiceObject mit der gesuchten Funktion');
+		$output[6]['head']=$this->CreateFunctionHead('FunctionExist',$in,$out,$offsetX+4);
 		$output[6]['data']=<<<DATA
-$space$sp3 private function _ServiceObjectByFunctionName(\$FunctionName){
+$space$sp3 public function FunctionExist(\$FunctionName){
 $space$sp7 foreach(\$this->_SERVICES as \$fn=>\$tmp)if(method_exists(\$this->_SERVICES->\$fn,\$FunctionName)){return \$this->_SERVICES->\$fn;}
 $space$sp7 foreach(\$this->_DEVICES as \$fn=>\$tmp)if(method_exists(\$this->_DEVICES->\$fn,\$FunctionName)){return \$this->_DEVICES->\$fn;}
 $space$sp7 return false;
@@ -588,6 +557,7 @@ $space$sp3 public function GetBaseUrl(){
 $space$sp7 return \$this->_IP.':'.\$this->_PORT;
 $space$sp3 }
 DATA;
+
 		foreach($output as $o){
 			$data.=$o['head'].$o['data'].PHP_EOL;
 		}	
@@ -597,7 +567,6 @@ DATA;
 	
 	private function CreateUpnpServiceClass($service,$offsetX=0,$fullServiceName=false){
 		$space=str_repeat(' ',$offsetX);
-		
 		$name=$this->GetServiceName($service,$fullServiceName);
 		$head=$this->CreateServiceHead(	$name, $service);
 		$data=<<<DATA
@@ -606,9 +575,11 @@ DATA;
 {$space}    protected \$SERVICEURL='{$service->controlURL}';
 {$space}    protected \$EVENTURL='{$service->eventSubURL}';
 DATA;
-		$data.=PHP_EOL.$space;
+		$data.=PHP_EOL.$space; $f=[];
 		if($service->SCPDURL){
-			$xml = simplexml_load_file($this->BaseUrl.$service->SCPDURL);
+			$sname=(string)$service->SCPDURL;
+			if($sname[0]!='/')$sname='/'.$sname;
+			$xml = simplexml_load_file($this->BaseUrl.$sname);
 			if($xml){
 				// Varaiablen Info Tabelle
 				$VarTable=[];
@@ -640,6 +611,8 @@ DATA;
 		$data="{$space}public function $fname";
 		$args="";
 		$info=null;
+		$WithoutDefaultCheck=substr(strtolower($fname),0,3)=='set';
+		$WithoutDefaultName=null;
 		if($action->argumentList->argument)
 		foreach($action->argumentList->argument as $argument){
 			$name=(string)$argument->name;
@@ -655,7 +628,10 @@ DATA;
 					$in[]='$'.$name.'='.$defaultValue;
 					$info[$name]['default']=$defaultValue;
 					$defaultValue=MSG_DEFAULT." = $defaultValue ";
-				}else $in[]='$'.$name;
+				}else { 
+					$in[]='$'.$name;
+					if($WithoutDefaultCheck&&!$WithoutDefaultName)$WithoutDefaultName=$name;
+				}
 				$args.="<$name>$".$name."</$name>";
 				$headPtr=&$headIn;
 			}else if($mode=='out'){
@@ -675,10 +651,16 @@ DATA;
 		}
 		$this->VarDefs[$ClassName][$fname]=$info;
 		if(count($in)>$this->MaxArguments)$this->MaxArguments=count($in);
+		// Argumente sortieren, mit vorgabe wert nach hinten
+		$a=$b=[];
+		foreach($in as $i)if(!strpos($i,'=')===true)$b[]=$i; else $a[]=$i;
+		$in=array_merge($b,$a);
 		$data.='('.implode(', ',$in).'){'.PHP_EOL;
+		
+		
 		$data.=$space.'    $args="'.$args.'";'.PHP_EOL;
 		$data.=$space.'    $filter="'.implode(',',$outFilter).'";'.PHP_EOL;
-		$data.=$space.'    return $this->BASE->Upnp($this->SERVICEURL,$this->SERVICE,\''.$action->name.'\',$args,$filter);'.PHP_EOL;
+		$data.=$space.'    return $this->BASE->Upnp($this->SERVICEURL,$this->SERVICE,\''.$action->name.'\',$args,$filter'.($WithoutDefaultName?",\$$WithoutDefaultName":'').');'.PHP_EOL;
 		$data.="$space}";
 
 		$head=$this->CreateFunctionHead((string)$action->name,$headIn,$headOut,$offsetX);
@@ -701,8 +683,8 @@ DATA;
 		if($device->iconList){
 			foreach($device->iconList[0]->icon as $icon){
 				$idd=$iconcount++;
-				$url=$this->BaseUrl.$icon->url;
-				$data.="$space        case $idd : return array('width'=>{$icon->width},'height'=>{$icon->height},'url'=>'{$url}');break;\n";
+				$url="\$this->GetBaseUrl().'".$icon->url."'";
+				$data.="$space        case $idd : return array('width'=>{$icon->width},'height'=>{$icon->height},'url'=>{$url});break;\n";
 			}
 		}
 		$data.="$space    }\n$space    return array('width'=>0,'height'=>0,'url'=>'');\n$space}\n";
@@ -716,43 +698,5 @@ DATA;
 	}
 }	
 
-//$url='http://192.168.112.60:7676/smp_14_';
-$url='http://192.168.112.56:1400/xml/device_description.xml';
-//$url='http://192.168.112.18:32469/DeviceDescription.xml';
 
-$o=new SchemeCreator();
-$s=$o->Create($url);
-//$s=$o->CreateJSFunctionReferenz();
-
-
-echo "Ausgabe:<br><plain>".nl2br(str_replace(' ','&nbsp;',htmlspecialchars($s))).'</plain>';
-exit;
-
-
-
-
-	
-
-
-
-/*
-// Test 1
-$xml = simplexml_load_file('http://192.168.112.54:1400/xml/AlarmClock1.xml');
-$s=CreateUpnpClassFunction($xml->actionList[0]->action[0]);
-echo "Ausgabe:<br><plain>".nl2br(htmlspecialchars($s)).'</plain>';
-exit;
-*/
-/*
-// Test 2
-$xml = simplexml_load_file('http://192.168.112.56:1400/xml/device_description.xml');
-$s=CreateUpnpServiceClass($xml->device->serviceList[0]->service[0],'Xavers');
-echo "Ausgabe:<br><plain>".nl2br(str_replace(' ','&nbsp;',htmlspecialchars($s))).'</plain>';
-exit;
-*/
-
-
-
-
-
-	
 ?>
